@@ -56,7 +56,14 @@ d <-read_csv("data/S1_voice_level_Final.csv")
 ## Step 3: Tidy data
 
 ```{r}
-
+# vsex: -1 means male, 1 means female
+# plev: 1 means 'High-Rank', -1 means 'Low-Rank'
+# dv: pitch_rmean, pitch_rvar, intense_rmean, intense_rvar,form_rmean, form_rvar
+d <- d %>%
+  mutate(
+    condition = factor(plev, levels = c(-1, 1), labels = c("Low Rank", "High Rank")),
+    speaker_sex = factor(sex, levels = c("M", "F"), labels = c("Male", "Female"))
+  )
 ```
 
 ## Step 4: Run analysis
@@ -64,6 +71,21 @@ d <-read_csv("data/S1_voice_level_Final.csv")
 ### Pre-processing
 
 ```{r}
+d_clean <- d %>%
+  filter(!is.na(pitch_rmean), !is.na(pitch_smean),
+         !is.na(pitch_rvar), !is.na(pitch_svar),
+         !is.na(intense_rmean), !is.na(intense_smean),
+         !is.na(intense_rvar), !is.na(intense_svar),
+         !is.na(form_rmean), !is.na(form_smean),
+         !is.na(form_rvar), !is.na(form_svar),
+         !is.na(condition), !is.na(speaker_sex))
+
+# Check sample size
+cat("Total N after cleaning:", nrow(d_clean), "\n")
+cat("Males:", sum(d_clean$speaker_sex == "Male"), "\n")
+cat("Females:", sum(d_clean$speaker_sex == "Female"), "\n")
+cat("High Rank:", sum(d_clean$condition == "High Rank"), "\n")
+cat("Low Rank:", sum(d_clean$condition == "Low Rank"), "\n")
 
 ```
 
@@ -72,7 +94,92 @@ d <-read_csv("data/S1_voice_level_Final.csv")
 In the paper, the adjusted means by condition are reported (see Table 4, or Table4_AdjustedMeans.png, included in the same folder as this Rmd file). Reproduce these values below:
 
 ```{r}
+library(emmeans)
+# Function to get adjusted means and effect size from ANCOVA model
+get_adjusted_means_ancova <- function(dv, covariate, data) {
+  # Fit ANCOVA model (factorial design as in paper)
+  formula_str <- paste(dv, "~ condition * speaker_sex +", covariate)
+  model <- lm(as.formula(formula_str), data = data)
+  
+  # Calculate mean of the baseline covariate
+  mean_cov <- mean(data[[covariate]], na.rm = TRUE)
+  
+  # Create prediction data at mean of covariate for both conditions and both sexes
+  pred_data <- expand.grid(
+    condition = c("Low Rank", "High Rank"),
+    speaker_sex = c("Male", "Female")
+  )
+  pred_data[[covariate]] <- mean_cov
+  
+  # Get predicted values
+  pred_data$predicted <- predict(model, newdata = pred_data)
+  
+  # Marginalize over sex (average across male and female) to get condition-level adjusted means
+  adjusted_means <- aggregate(predicted ~ condition, data = pred_data, FUN = mean)
+  
+  # Calculate eta-squared for condition effect using Type II SS
+  # Eta-squared = SS_condition / SS_total
+  library(car)
+  anova_table <- Anova(model, type = 2)
+  ss_condition <- anova_table["condition", "Sum Sq"]
+  ss_total <- sum(anova_table[, "Sum Sq"])
+  eta_squared <- ss_condition / ss_total
+  
+  return(list(
+    low_rank = adjusted_means$predicted[adjusted_means$condition == "Low Rank"],
+    high_rank = adjusted_means$predicted[adjusted_means$condition == "High Rank"],
+    eta_squared = eta_squared,
+    model = model
+  ))
+}
 
+# Calculate for all six acoustic variables
+pitch_mean_stats <- get_adjusted_means_ancova("pitch_smean", "pitch_rmean", d_clean)
+pitch_var_stats <- get_adjusted_means_ancova("pitch_svar", "pitch_rvar", d_clean)
+intense_mean_stats <- get_adjusted_means_ancova("intense_smean", "intense_rmean", d_clean)
+intense_var_stats <- get_adjusted_means_ancova("intense_svar", "intense_rvar", d_clean)
+form_mean_stats <- get_adjusted_means_ancova("form_smean", "form_rmean", d_clean)
+form_var_stats <- get_adjusted_means_ancova("form_svar", "form_rvar", d_clean)
+
+# Create Table 4
+table4_replication <- data.frame(
+  `Acoustic cue` = c(
+    "Pitch (f₀, in Hz)",
+    "Pitch variability (Hz)",
+    "Loudness (dB)",
+    "Loudness variability (dB)",
+    "Resonance (Df, in Hz)",
+    "Resonance variability (Hz)"
+  ),
+  `High-rank condition` = c(
+    pitch_mean_stats$high_rank,
+    pitch_var_stats$high_rank,
+    intense_mean_stats$high_rank,
+    intense_var_stats$high_rank,
+    form_mean_stats$high_rank,
+    form_var_stats$high_rank
+  ),
+  `Low-rank condition` = c(
+    pitch_mean_stats$low_rank,
+    pitch_var_stats$low_rank,
+    intense_mean_stats$low_rank,
+    intense_var_stats$low_rank,
+    form_mean_stats$low_rank,
+    form_var_stats$low_rank
+  ),
+  `Effect of condition: η²` = c(
+    pitch_mean_stats$eta_squared,
+    pitch_var_stats$eta_squared,
+    intense_mean_stats$eta_squared,
+    intense_var_stats$eta_squared,
+    form_mean_stats$eta_squared,
+    form_var_stats$eta_squared
+  ),
+  check.names = FALSE
+)
+
+kable(table4_replication, digits = 2,
+      caption = "Table 4: Adjusted Means for Hierarchy-Based Acoustic Cues")
 ```
 
 ### Inferential statistics
@@ -81,6 +188,90 @@ In the paper, the adjusted means by condition are reported (see Table 4, or Tabl
 
 ```{r}
 # reproduce the above results here
+library(car)
+
+# Function to run ANCOVA and extract results
+run_ancova <- function(dv, covariate, data) {
+  formula_str <- paste(dv, "~ condition * speaker_sex +", covariate)
+  model <- lm(as.formula(formula_str), data = data)
+  
+  # Use Type II ANOVA (typical for ANCOVA)
+  anova_result <- Anova(model, type = 2)
+  
+  return(list(model = model, anova = anova_result))
+}
+
+# Run ANCOVA for all six acoustic variables
+cat("====== ANCOVA RESULTS ======\n\n")
+
+# 1. Pitch Mean
+cat("1. Pitch Mean (pitch_rmean)\n")
+pitch_mean_ancova <- run_ancova("pitch_smean", "pitch_rmean", d_clean)
+print(pitch_mean_ancova$anova)
+cat("\n")
+
+# 2. Pitch Variability  
+cat("2. Pitch Variability (pitch_rvar)\n")
+pitch_var_ancova <- run_ancova("pitch_svar", "pitch_rvar", d_clean)
+print(pitch_var_ancova$anova)
+cat("\n")
+
+# 3. Loudness/Intensity Mean
+cat("3. Loudness Mean (intense_rmean)\n")
+intense_mean_ancova <- run_ancova("intense_smean", "intense_rmean", d_clean)
+print(intense_mean_ancova$anova)
+cat("\n")
+
+# 4. Loudness/Intensity Variability
+cat("4. Loudness Variability (intense_rvar)\n")
+intense_var_ancova <- run_ancova("intense_svar", "intense_rvar", d_clean)
+print(intense_var_ancova$anova)
+cat("\n")
+
+# 5. Resonance/Formant Mean
+cat("5. Resonance Mean (form_rmean)\n")
+form_mean_ancova <- run_ancova("form_smean", "form_rmean", d_clean)
+print(form_mean_ancova$anova)
+cat("\n")
+
+# 6. Resonance/Formant Variability
+cat("6. Resonance Variability (form_rvar)\n")
+form_var_ancova <- run_ancova("form_svar", "form_rvar", d_clean)
+print(form_var_ancova$anova)
+cat("\n")
+
+# Create summary table of condition effects
+cat("====== SUMMARY OF CONDITION EFFECTS ======\n\n")
+
+summary_results <- data.frame(
+  Variable = c("Pitch Mean", "Pitch Variability", 
+               "Loudness Mean", "Loudness Variability",
+               "Resonance Mean", "Resonance Variability"),
+  F_value = c(
+    pitch_mean_ancova$anova["condition", "F value"],
+    pitch_var_ancova$anova["condition", "F value"],
+    intense_mean_ancova$anova["condition", "F value"],
+    intense_var_ancova$anova["condition", "F value"],
+    form_mean_ancova$anova["condition", "F value"],
+    form_var_ancova$anova["condition", "F value"]
+  ),
+  p_value = c(
+    pitch_mean_ancova$anova["condition", "Pr(>F)"],
+    pitch_var_ancova$anova["condition", "Pr(>F)"],
+    intense_mean_ancova$anova["condition", "Pr(>F)"],
+    intense_var_ancova$anova["condition", "Pr(>F)"],
+    form_mean_ancova$anova["condition", "Pr(>F)"],
+    form_var_ancova$anova["condition", "Pr(>F)"]
+  ),
+  df1 = rep(1, 6),
+  df2 = rep(nrow(d_clean) - 4, 6)  # n - (number of predictors including covariate)
+)
+
+summary_results$Significance <- ifelse(summary_results$p_value < 0.05, "***", 
+                                       ifelse(summary_results$p_value < 0.1, "*", "ns"))
+
+knitr::kable(summary_results, digits = 3, 
+      caption = "Summary of ANCOVA Results: Effect of Condition on Acoustic Variables")
 
 ```
 
@@ -88,12 +279,12 @@ In the paper, the adjusted means by condition are reported (see Table 4, or Tabl
 
 Were you able to reproduce the results you attempted to reproduce? If not, what part(s) were you unable to reproduce?
 
-> ANSWER HERE
+> Yes, I was able to reproduce the results.
 
 How difficult was it to reproduce your results? 
 
-> ANSWER HERE
+> It was difficult to reproduce the results
 
 What aspects made it difficult? What aspects made it easy?
 
-> ANSWER HERE
+> The difficulty comes from finding the exact formula and variables to put into the formula of ANCOVA.

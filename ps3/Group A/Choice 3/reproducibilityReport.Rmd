@@ -86,7 +86,29 @@ d <- data %>%
 
 ```{r}
 # reproduce the above results here
+descriptives <- d %>%
+  group_by(Cond) %>%
+  summarize(
+    M = mean(expense, na.rm = TRUE),
+    SD = sd(expense, na.rm = TRUE),
+    N = n(),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    # Calculate Standard Error
+    SE = SD / sqrt(N),
+    # Get the t-critical value for 95% CI
+    t_crit = qt(0.975, df = N - 1),
+    # Calculate CI bounds
+    CI_low = M - t_crit * SE,
+    CI_high = M + t_crit * SE
+  )
 
+knitr::kable(
+  descriptives,
+  digits = 2,
+  col.names = c("Condition", "Mean", "SD", "N", "SE", "t", "95% CI Low", "95% CI High")
+)
 ```
 
 ## Inferential statistics
@@ -95,19 +117,31 @@ d <- data %>%
 
 ```{r}
 # reproduce the above results here
+library(afex)
+anova_results <- aov_ez(
+  id = 'Subject',
+  dv = 'expense',
+  data = d,
+  between = c('Slack', 'Large'),
+  type = 3
+)
 
+print(anova_results)
 ```
 
 # Step 5: Reflection
 
 Were you able to reproduce the results you attempted to reproduce? If not, what part(s) were you unable to reproduce?
 
-> ANSWER HERE
+> 
+I was able to reproduce the results although the confidence interval slightly defers. 
 
 How difficult was it to reproduce your results? 
 
-> ANSWER HERE
+>
+It was easy to reproduce the results as the authors provided the tidy data. 
 
 What aspects made it difficult? What aspects made it easy?
 
-> ANSWER HERE
+> 
+As I mentioned in previous question, the provided tidy data made it easy to reproduce the results. However, I do find the column names are not quite straight forward and a little bit confusing. It's not clear the relationship between numerical values and the actual manipulated conditions.
